@@ -1,12 +1,13 @@
 package config
 
 import (
+	"os"
 	"strings"
 
 	"github.com/spf13/viper"
 )
 
-// Config stores all configuration of the application.
+// Config stores all application configuration.
 type Config struct {
 	ServerPort         string   `mapstructure:"PORT"`
 	MongoURI           string   `mapstructure:"MONGO_URI"`
@@ -23,62 +24,53 @@ type Config struct {
 	AllowedOrigins     []string `mapstructure:"ALLOWED_ORIGINS"`
 }
 
-// LoadConfig reads configuration from file or environment variables.
-func LoadConfig(path string) (config Config, err error) {
-	viper.AddConfigPath(path)
-	viper.SetConfigName(".env")
-	viper.SetConfigType("env")
+// LoadConfig reads configuration ONLY from environment variables (Docker-safe)
+func LoadConfig(path string) (Config, error) {
+	var config Config
 
+	// 🔥 CRITICAL: Make env vars take priority
 	viper.AutomaticEnv()
 
-	// Set default values
+	// Explicit binding (prevents weird parsing issues)
+	_ = viper.BindEnv("MONGO_URI")
+	_ = viper.BindEnv("PORT")
+	_ = viper.BindEnv("DB_NAME")
+	_ = viper.BindEnv("JWT_SECRET_KEY")
+	_ = viper.BindEnv("REDIS_ADDR")
+
+	// Defaults
 	viper.SetDefault("PORT", "8080")
 	viper.SetDefault("ENABLE_CACHE", false)
 	viper.SetDefault("JWT_EXPIRATION_HOURS", 72)
-	viper.SetDefault("COOKIE_DOMAINS", []string{"localhost"})
-	viper.SetDefault("SECURE_COOKIE", false)
-	viper.SetDefault("ALLOWED_ORIGINS", []string{"http://localhost:5173"})
+	viper.SetDefault("ALLOWED_ORIGINS", "http://localhost:5173")
 
-	err = viper.ReadInConfig()
-	if err != nil {
-		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
-			return
+	// ❌ DO NOT use ReadInConfig in Docker (this is causing your issue)
+	_ = os.Setenv("CONFIG_MODE", "docker")
+
+	// Load into struct
+	if err := viper.Unmarshal(&config); err != nil {
+		return config, err
+	}
+
+	// Clean CSV fields
+	config.AllowedOrigins = cleanCSV(viper.GetString("ALLOWED_ORIGINS"))
+	config.CookieDomains = cleanCSV(viper.GetString("COOKIE_DOMAINS"))
+
+	return config, nil
+}
+
+// cleanCSV safely parses comma-separated values
+func cleanCSV(input string) []string {
+	parts := strings.Split(input, ",")
+	var result []string
+
+	for _, p := range parts {
+		v := strings.TrimSpace(p)
+		v = strings.Trim(v, "\"'")
+		if v != "" {
+			result = append(result, v)
 		}
 	}
 
-	err = viper.Unmarshal(&config)
-	if err != nil {
-		return
-	}
-
-	// Manually handle comma-separated strings for slices if viper didn't split them
-	if allowedOrigins := viper.GetString("ALLOWED_ORIGINS"); allowedOrigins != "" {
-		parts := strings.Split(allowedOrigins, ",")
-		var cleaned []string
-		for _, p := range parts {
-			// Trim spaces and quotes
-			trimmed := strings.TrimSpace(p)
-			trimmed = strings.Trim(trimmed, "\"'")
-			if trimmed != "" {
-				cleaned = append(cleaned, trimmed)
-			}
-		}
-		config.AllowedOrigins = cleaned
-	}
-
-	if cookieDomains := viper.GetString("COOKIE_DOMAINS"); cookieDomains != "" {
-		parts := strings.Split(cookieDomains, ",")
-		var cleaned []string
-		for _, p := range parts {
-			// Trim spaces and quotes
-			trimmed := strings.TrimSpace(p)
-			trimmed = strings.Trim(trimmed, "\"'")
-			if trimmed != "" {
-				cleaned = append(cleaned, trimmed)
-			}
-		}
-		config.CookieDomains = cleaned
-	}
-
-	return
+	return result
 }
